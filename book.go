@@ -4,6 +4,8 @@
 
 package bookshelf
 
+import "sort"
+
 // Book holds metadata about a book.
 type Book struct {
 	ID            int64
@@ -29,6 +31,11 @@ func (b *Book) CreatedByDisplayName() string {
 func (b *Book) SetCreatorAnonymous() {
 	b.CreatedBy = ""
 	b.CreatedByID = "anonymous"
+}
+
+// Search finds the index at which the given book exists/should exist in a list of books
+func (b *Book) InsertAt(sortedByTitle []*Book) int {
+	return sort.Search(len(sortedByTitle), func(i int) bool { return sortedByTitle[i].Title >= b.Title })
 }
 
 // BookDatabase provides thread-safe access to a database of books.

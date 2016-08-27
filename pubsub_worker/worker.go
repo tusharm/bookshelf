@@ -14,21 +14,27 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"cloud.google.com/go/pubsub"
+
+	"github.com/Rican7/retry"
+	"github.com/Rican7/retry/strategy"
+	"github.com/Rican7/retry/backoff"
+	"github.com/tusharm/bookshelf"
 
 	"golang.org/x/net/context"
 
 	"google.golang.org/api/books/v1"
-
-	"github.com/GoogleCloudPlatform/golang-samples/getting-started/bookshelf"
+	"google.golang.org/appengine/memcache"
+	"google.golang.org/appengine"
 )
 
 const subName = "book-worker-sub"
 
 var (
 	countMu sync.Mutex
-	count   int
+	count int
 
 	booksClient  *books.Service
 	subscription *pubsub.Subscription
@@ -55,6 +61,9 @@ func main() {
 	// Start worker goroutine.
 	go subscribe()
 
+	// Sync cache
+	go syncBooksCache()
+
 	// [START http]
 	// Publish a count of processed requests to the server homepage.
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +76,7 @@ func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		port = p
 	}
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":" + port, nil))
 	// [END http]
 }
 
@@ -138,4 +147,38 @@ func update(bookID int64) error {
 	}
 
 	return bookshelf.DB.UpdateBook(book)
+}
+
+// syncs the books cache regularly with the datastore
+func syncBooksCache() {
+	loop:
+	for {
+		select {
+		case <-time.Tick(5 * time.Second):
+			ctxt := appengine.BackgroundContext()
+
+			newBooks, err := bookshelf.DB.ListBooks()
+			if err != nil {
+				log.Printf("sync-worker: failed to get list from DB; sync failed: %v", err)
+				continue loop
+			}
+
+			_ = retry.Retry(func(attempt uint) error {
+				books := make([]*bookshelf.Book, 0)
+				item, err := memcache.JSON.Get(ctxt, bookshelf.BooksKey, &books)
+				if err != nil {
+					log.Printf("sync-worker: failed to get books from cache; sync failed, will retry: %v", err)
+					return err
+				}
+
+				item.Object = newBooks
+				if err := memcache.JSON.CompareAndSwap(ctxt, item); err != nil {
+					log.Printf("sync-worker: failed to set books in cache; sync failed, will retry: %v", err)
+					return err
+				}
+
+				return nil
+			}, strategy.Limit(5), strategy.Backoff(backoff.BinaryExponential(10 * time.Millisecond)))
+		}
+	}
 }

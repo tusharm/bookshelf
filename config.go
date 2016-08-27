@@ -5,7 +5,6 @@
 package bookshelf
 
 import (
-	"errors"
 	"log"
 	"os"
 
@@ -13,13 +12,13 @@ import (
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/storage"
 
-	"gopkg.in/mgo.v2"
-
 	"github.com/gorilla/sessions"
 
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"gopkg.in/mgo.v2"
 )
 
 var (
@@ -37,7 +36,10 @@ var (
 	_ mgo.Session
 )
 
-const PubsubTopicID = "fill-book-details"
+const (
+	PubsubTopicID = "fill-book-details"
+	BooksKey = "books"
+)
 
 func init() {
 	var err error
@@ -83,12 +85,6 @@ func configureStorage(bucketID string) (*storage.BucketHandle, error) {
 }
 
 func configurePubsub(projectID string) (*pubsub.Client, error) {
-	if _, ok := DB.(*memoryDB); ok {
-		return nil, errors.New("Pub/Sub worker doesn't work with the in-memory DB " +
-		"(worker does not share its memory as the main app). Configure another " +
-		"database in bookshelf/config.go first (e.g. MySQL, Cloud Datastore, etc)")
-	}
-
 	ctx := context.Background()
 	client, err := pubsub.NewClient(ctx, projectID)
 	if err != nil {

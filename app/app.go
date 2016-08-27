@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"time"
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/storage"
@@ -25,10 +26,14 @@ import (
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/satori/go.uuid"
+	"github.com/tusharm/bookshelf"
+	"github.com/Rican7/retry"
+	"github.com/Rican7/retry/strategy"
+	"github.com/Rican7/retry/backoff"
+
 
 	"google.golang.org/appengine"
-
-	"github.com/GoogleCloudPlatform/golang-samples/getting-started/bookshelf"
+	"google.golang.org/appengine/memcache"
 )
 
 var (
@@ -93,9 +98,17 @@ func registerHandlers() {
 
 // listHandler displays a list with summaries of books in the database.
 func listHandler(w http.ResponseWriter, r *http.Request) *appError {
-	books, err := bookshelf.DB.ListBooks()
-	if err != nil {
-		return appErrorf(err, "could not list books: %v", err)
+	books := make([]*bookshelf.Book, 0)
+	ctxt := appengine.NewContext(r)
+
+	// try getting from cache
+	if _, err := memcache.JSON.Get(ctxt, bookshelf.BooksKey, &books); err == nil && len(books) != 0 {
+		log.Printf("got %v books from cache", len(books))
+	} else {
+		books, err = bookshelf.DB.ListBooks()
+		if err != nil {
+			return appErrorf(err, "could not list books: %v", err)
+		}
 	}
 
 	return listTmpl.Execute(w, r, books)
@@ -244,6 +257,44 @@ func createHandler(w http.ResponseWriter, r *http.Request) *appError {
 		return appErrorf(err, "could not save book: %v", err)
 	}
 	go publishUpdate(id)
+
+	book.ID = id
+
+	// update the cache
+	retryErr := retry.Retry(func(attempt uint) error {
+		books := make([]*bookshelf.Book, 0)
+		ctx := appengine.NewContext(r)
+
+		item, err := memcache.JSON.Get(ctx, bookshelf.BooksKey, &books)
+		if err == memcache.ErrCacheMiss {
+			log.Printf("Key not found in cache, adding one")
+			return memcache.JSON.Add(ctx, &memcache.Item{Key: bookshelf.BooksKey, Object: append(books, book)})
+		} else if err != nil {
+			log.Printf("Error getting books from cache, retrying (attempt %v) : %v", attempt, err)
+			return err
+		}
+
+		index := book.InsertAt(books)
+		if index < len(books) {
+			// insert
+			books = append(books[:index], append([]*bookshelf.Book{book}, books[index:]...)...)
+		} else {
+			// append
+			books = append(books, book)
+		}
+
+		item.Object = books
+		if err = memcache.JSON.CompareAndSwap(ctx, item); err != nil {
+			log.Printf("Error adding book to the cache, retrying (attempt %v) : %v", attempt, err)
+			return err
+		}
+
+		return nil
+	}, strategy.Limit(5), strategy.Backoff(backoff.BinaryExponential(10 * time.Millisecond)))
+	if retryErr != nil {
+		log.Printf("failed to add book to cache after retries")
+	}
+
 	http.Redirect(w, r, fmt.Sprintf("/books/%d", id), http.StatusFound)
 	return nil
 }
@@ -266,6 +317,41 @@ func updateHandler(w http.ResponseWriter, r *http.Request) *appError {
 		return appErrorf(err, "could not save book: %v", err)
 	}
 	go publishUpdate(book.ID)
+
+
+	// update the cache
+	retryErr := retry.Retry(func(attempt uint) error {
+		books := make([]*bookshelf.Book, 0)
+		ctx := appengine.NewContext(r)
+
+		// get books
+		item, err := memcache.JSON.Get(ctx, bookshelf.BooksKey, &books)
+		if err == memcache.ErrCacheMiss {
+			log.Printf("Key not found in cache")
+			return nil
+		} else if err != nil {
+			log.Printf("Error getting books from cache, retrying (attempt %v) : %v", attempt, err)
+			return err
+		}
+
+		// update book
+		index := book.InsertAt(books)
+		if index < len(books) && books[index].ID == book.ID {
+			books[index] = book
+		}
+
+		item.Object = books
+		if err := memcache.JSON.CompareAndSwap(ctx, item); err != nil {
+			log.Printf("Error updating book in cache, retrying (attempt %v) : %v", attempt, err)
+			return err
+		}
+
+		return nil
+	}, strategy.Limit(5), strategy.Backoff(backoff.BinaryExponential(10 * time.Millisecond)))
+	if retryErr != nil {
+		log.Printf("failed to update book from cache after retries")
+	}
+
 	http.Redirect(w, r, fmt.Sprintf("/books/%d", book.ID), http.StatusFound)
 	return nil
 }
@@ -280,6 +366,46 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) *appError {
 	if err != nil {
 		return appErrorf(err, "could not delete book: %v", err)
 	}
+
+	// update the cache
+	retryErr := retry.Retry(func(attempt uint) error {
+		books := make([]*bookshelf.Book, 0)
+		ctx := appengine.NewContext(r)
+
+		// get books
+		item, err := memcache.JSON.Get(ctx, bookshelf.BooksKey, &books)
+		if err == memcache.ErrCacheMiss {
+			log.Printf("Key not found in cache")
+			return nil
+		} else if err != nil {
+			log.Printf("Error getting books from cache, retrying (attempt %v) : %v", attempt, err)
+			return err
+		}
+
+		// find the book to delete
+		var index int = -1
+		for id, book := range books {
+			if book.ID == int64(id) {
+				index = id
+				break
+			}
+		}
+
+		if index != -1 {
+			books = append(books[:index], books[index + 1:]...)
+			item.Object = books
+			if err := memcache.JSON.CompareAndSwap(ctx, item); err != nil {
+				log.Printf("Error deleting book from cache, retrying (attempt %v) : %v", attempt, err)
+				return err
+			}
+		}
+
+		return nil
+	}, strategy.Limit(5), strategy.Backoff(backoff.BinaryExponential(10 * time.Millisecond)))
+	if retryErr != nil {
+		log.Printf("failed to delete book from cache after retries")
+	}
+
 	http.Redirect(w, r, "/books", http.StatusFound)
 	return nil
 }

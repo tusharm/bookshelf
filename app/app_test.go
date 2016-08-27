@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/golang-samples/getting-started/bookshelf"
 	"github.com/GoogleCloudPlatform/golang-samples/internal/testutil"
 	"github.com/GoogleCloudPlatform/golang-samples/internal/webtest"
+	"github.com/tusharm/bookshelf"
 )
 
 var wt *webtest.W

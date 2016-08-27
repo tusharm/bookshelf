@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/satori/go.uuid"
+	"github.com/tusharm/bookshelf"
+
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 
-	"github.com/satori/go.uuid"
 	"google.golang.org/api/plus/v1"
-
-	"github.com/GoogleCloudPlatform/golang-samples/getting-started/bookshelf"
 )
 
 const (

@@ -6,7 +6,6 @@ package bookshelf
 
 import (
 	"fmt"
-
 	"cloud.google.com/go/datastore"
 
 	"golang.org/x/net/context"
@@ -69,6 +68,7 @@ func (db *datastoreDB) AddBook(b *Book) (id int64, err error) {
 	if err != nil {
 		return 0, fmt.Errorf("datastoredb: could not put Book: %v", err)
 	}
+
 	return k.ID(), nil
 }
 
@@ -94,13 +94,12 @@ func (db *datastoreDB) UpdateBook(b *Book) error {
 
 // ListBooks returns a list of books, ordered by title.
 func (db *datastoreDB) ListBooks() ([]*Book, error) {
-	ctx := context.Background()
 	books := make([]*Book, 0)
-	q := datastore.NewQuery("Book").
-		Order("Title")
 
+	// get books from DB
+	ctx := context.Background()
+	q := datastore.NewQuery("Book").Order("Title")
 	keys, err := db.client.GetAll(ctx, q, &books)
-
 	if err != nil {
 		return nil, fmt.Errorf("datastoredb: could not list books: %v", err)
 	}
@@ -122,8 +121,8 @@ func (db *datastoreDB) ListBooksCreatedBy(userID string) ([]*Book, error) {
 
 	books := make([]*Book, 0)
 	q := datastore.NewQuery("Book").
-		Filter("CreatedByID =", userID).
-		Order("Title")
+	Filter("CreatedByID =", userID).
+	Order("Title")
 
 	keys, err := db.client.GetAll(ctx, q, &books)
 
@@ -137,3 +136,4 @@ func (db *datastoreDB) ListBooksCreatedBy(userID string) ([]*Book, error) {
 
 	return books, nil
 }
+
