@@ -100,7 +100,7 @@ func subscribe() {
 
 		log.Printf("[ID %d] Processing.", id)
 		go func() {
-			if err := update(id); err != nil {
+			if err := update(ctx, id); err != nil {
 				log.Printf("[ID %d] could not update: %v", id, err)
 				msg.Done(false) // NACK
 				return
@@ -118,7 +118,7 @@ func subscribe() {
 
 // update retrieves the book with the given ID, finds metata from the Books
 // server and updates the database with the book's details.
-func update(bookID int64) error {
+func update(ctxt context.Context, bookID int64) error {
 	book, err := bookshelf.DB.GetBook(bookID)
 	if err != nil {
 		return err
@@ -134,6 +134,7 @@ func update(bookID int64) error {
 	}
 
 	info := vols.Items[0].VolumeInfo
+	book.ID = bookID
 	book.Title = info.Title
 	book.Author = strings.Join(info.Authors, ", ")
 	book.PublishedDate = info.PublishedDate
@@ -146,7 +147,15 @@ func update(bookID int64) error {
 		book.ImageURL = strings.Replace(url, "http://", "https://", 1)
 	}
 
-	return bookshelf.DB.UpdateBook(book)
+	err = bookshelf.DB.UpdateBook(book)
+	if err == nil {
+		if err = bookshelf.IndexBook(ctxt, book); err != nil {
+			log.Printf("search: failed to update index for book (%v): %v", book.Title, err)
+		}
+		return nil
+	}
+
+	return err
 }
 
 // syncs the books cache regularly with the datastore

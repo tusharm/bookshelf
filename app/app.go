@@ -31,15 +31,14 @@ import (
 	"github.com/Rican7/retry/strategy"
 	"github.com/Rican7/retry/backoff"
 
-
 	"google.golang.org/appengine"
 	"google.golang.org/appengine/memcache"
 )
 
 var (
 	// See template.go
-	listTmpl   = fetchTemplate("list.html")
-	editTmpl   = fetchTemplate("edit.html")
+	listTmpl = fetchTemplate("list.html")
+	editTmpl = fetchTemplate("edit.html")
 	detailTmpl = fetchTemplate("detail.html")
 )
 
@@ -54,33 +53,35 @@ func registerHandlers() {
 	r := mux.NewRouter()
 
 	r.Handle("/", http.RedirectHandler("/books", http.StatusFound))
+	r.PathPrefix("/resources/").Handler(http.StripPrefix("/resources/", http.FileServer(http.Dir("resources"))))
 
 	r.Methods("GET").Path("/books").
-		Handler(appHandler(listHandler))
+	Handler(appHandler(listHandler))
 	r.Methods("GET").Path("/books/mine").
-		Handler(appHandler(listMineHandler))
+	Handler(appHandler(listMineHandler))
 	r.Methods("GET").Path("/books/{id:[0-9]+}").
-		Handler(appHandler(detailHandler))
+	Handler(appHandler(detailHandler))
 	r.Methods("GET").Path("/books/add").
-		Handler(appHandler(addFormHandler))
+	Handler(appHandler(addFormHandler))
 	r.Methods("GET").Path("/books/{id:[0-9]+}/edit").
-		Handler(appHandler(editFormHandler))
+	Handler(appHandler(editFormHandler))
 
 	r.Methods("POST").Path("/books").
-		Handler(appHandler(createHandler))
+	Handler(appHandler(createHandler))
 	r.Methods("POST", "PUT").Path("/books/{id:[0-9]+}").
-		Handler(appHandler(updateHandler))
+	Handler(appHandler(updateHandler))
 	r.Methods("POST").Path("/books/{id:[0-9]+}:delete").
-		Handler(appHandler(deleteHandler)).Name("delete")
+	Handler(appHandler(deleteHandler)).Name("delete")
+
 
 	// The following handlers are defined in auth.go and used in the
 	// "Authenticating Users" part of the Getting Started guide.
 	r.Methods("GET").Path("/login").
-		Handler(appHandler(loginHandler))
+	Handler(appHandler(loginHandler))
 	r.Methods("POST").Path("/logout").
-		Handler(appHandler(logoutHandler))
+	Handler(appHandler(logoutHandler))
 	r.Methods("GET").Path("/oauth2callback").
-		Handler(appHandler(oauthCallbackHandler))
+	Handler(appHandler(oauthCallbackHandler))
 
 	// Respond to App Engine and Compute Engine health checks.
 	// Indicate the server is healthy.
@@ -98,20 +99,44 @@ func registerHandlers() {
 
 // listHandler displays a list with summaries of books in the database.
 func listHandler(w http.ResponseWriter, r *http.Request) *appError {
-	books := make([]*bookshelf.Book, 0)
 	ctxt := appengine.NewContext(r)
 
+	// search for books based on query term
+	term := r.URL.Query().Get("term")
+
+	searchIds := make(map[int64]struct{}, 0)
+	if term != "" {
+		log.Printf("search: search requested for term: %v", term)
+		ids, err := bookshelf.SearchBooks(ctxt, term)
+		if err != nil {
+			return appErrorf(err, "Error searching books for term %v: %v", term, err)
+		}
+
+		for _, id := range ids {
+			searchIds[id] = struct{}{}
+		}
+	}
+
 	// try getting from cache
+	books := make([]*bookshelf.Book, 0)
 	if _, err := memcache.JSON.Get(ctxt, bookshelf.BooksKey, &books); err == nil && len(books) != 0 {
 		log.Printf("got %v books from cache", len(books))
 	} else {
+		// get from DB
 		books, err = bookshelf.DB.ListBooks()
 		if err != nil {
 			return appErrorf(err, "could not list books: %v", err)
 		}
 	}
 
-	return listTmpl.Execute(w, r, books)
+	// filter books which are not in the search term, if applicable
+	filtered := make([]*bookshelf.Book, 0)
+	for _, book := range books {
+		if _, ok := searchIds[book.ID]; ok || term == "" {
+			filtered = append(filtered, book)
+		}
+	}
+	return listTmpl.Execute(w, r, filtered)
 }
 
 // listMineHandler displays a list of books created by the currently
@@ -259,11 +284,16 @@ func createHandler(w http.ResponseWriter, r *http.Request) *appError {
 	go publishUpdate(id)
 
 	book.ID = id
+	ctx := appengine.NewContext(r)
+
+	// index the document
+	if err := bookshelf.IndexBook(ctx, book); err != nil {
+		log.Printf("search: could not index book (%v): %v", book.Title, err)
+	}
 
 	// update the cache
 	retryErr := retry.Retry(func(attempt uint) error {
 		books := make([]*bookshelf.Book, 0)
-		ctx := appengine.NewContext(r)
 
 		item, err := memcache.JSON.Get(ctx, bookshelf.BooksKey, &books)
 		if err == memcache.ErrCacheMiss {
@@ -318,11 +348,16 @@ func updateHandler(w http.ResponseWriter, r *http.Request) *appError {
 	}
 	go publishUpdate(book.ID)
 
+	ctx := appengine.NewContext(r)
+
+	// update the indexed book
+	if err := bookshelf.IndexBook(ctx, book); err != nil {
+		log.Printf("search: could not update for book (%v): %v", book.Title, err)
+	}
 
 	// update the cache
 	retryErr := retry.Retry(func(attempt uint) error {
 		books := make([]*bookshelf.Book, 0)
-		ctx := appengine.NewContext(r)
 
 		// get books
 		item, err := memcache.JSON.Get(ctx, bookshelf.BooksKey, &books)
@@ -367,10 +402,16 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) *appError {
 		return appErrorf(err, "could not delete book: %v", err)
 	}
 
+	ctx := appengine.NewContext(r)
+
+	// delete from search index
+	if err := bookshelf.DeleteBook(ctx, id); err != nil {
+		log.Printf("search: error deleting book id %v from index: %v", id, err)
+	}
+
 	// update the cache
 	retryErr := retry.Retry(func(attempt uint) error {
 		books := make([]*bookshelf.Book, 0)
-		ctx := appengine.NewContext(r)
 
 		// get books
 		item, err := memcache.JSON.Get(ctx, bookshelf.BooksKey, &books)
@@ -438,7 +479,8 @@ type appError struct {
 }
 
 func (fn appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if e := fn(w, r); e != nil { // e is *appError, not os.Error.
+	if e := fn(w, r); e != nil {
+		// e is *appError, not os.Error.
 		log.Printf("Handler error: status code: %d, message: %s, underlying err: %#v",
 			e.Code, e.Message, e.Error)
 

@@ -2,8 +2,8 @@
 
 This is based on the sample that comes with the SDK documentation plus a few extra things:
 
-+ Cache the landing page in Memcache
-+ Pub/Sub based notifications when comments are added to a book
++ Cache the landing page (uses Memcache)
++ Search for books (uses Search API)
  
 #### Dev/Deploy
 

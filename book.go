@@ -53,7 +53,6 @@ type BookDatabase interface {
 	// AddBook saves a given book, assigning it a new ID.
 	AddBook(b *Book) (id int64, err error)
 
-
 	// DeleteBook removes a given book by its ID.
 	DeleteBook(id int64) error
 

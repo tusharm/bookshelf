@@ -8,7 +8,7 @@
 <form method="post" enctype="multipart/form-data" action="/books{{if .}}/{{.ID}}{{end}}">
   <div class="form-group">
     <label for="title">Title</label>
-    <input class="form-control" name="title" id="title" value="{{.Title}}">
+    <input class="form-control" name="title" id="title" value="{{.Title}}" {{if .}}readonly{{end}}>
   </div>
   <div class="form-group">
     <label for="author">Author</label>

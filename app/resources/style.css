@@ -1,0 +1,6 @@
+.navbar>.container-fluid .navbar-brand {
+    margin-left: -15px;
+    font-style: oblique;
+    font-weight: bolder;
+    font-family: monospace
+}
