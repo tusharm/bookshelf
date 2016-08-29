@@ -3,11 +3,11 @@ package bookshelf
 import (
 	"fmt"
 	"log"
+	"strconv"
 
 	"golang.org/x/net/context"
 
 	"google.golang.org/appengine/search"
-	"strconv"
 )
 
 const BooksIndex = "books"
@@ -22,11 +22,7 @@ func IndexBook(ctxt context.Context, book *Book) error {
 		return err
 	}
 	_, err = index.Put(ctxt, fmt.Sprintf("%v", book.ID), &Doc{book.Title})
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func SearchBooks(ctxt context.Context, term string) ([]int64, error) {

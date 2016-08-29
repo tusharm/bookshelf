@@ -99,8 +99,8 @@ func subscribe() {
 		}
 
 		log.Printf("[ID %d] Processing.", id)
-		go func() {
-			if err := update(ctx, id); err != nil {
+		go func(ctxt context.Context) {
+			if err := update(ctxt, id); err != nil {
 				log.Printf("[ID %d] could not update: %v", id, err)
 				msg.Done(false) // NACK
 				return
@@ -112,7 +112,7 @@ func subscribe() {
 
 			msg.Done(true) // ACK
 			log.Printf("[ID %d] ACK", id)
-		}()
+		}(appengine.BackgroundContext())
 	}
 }
 
@@ -147,15 +147,15 @@ func update(ctxt context.Context, bookID int64) error {
 		book.ImageURL = strings.Replace(url, "http://", "https://", 1)
 	}
 
-	err = bookshelf.DB.UpdateBook(book)
-	if err == nil {
-		if err = bookshelf.IndexBook(ctxt, book); err != nil {
-			log.Printf("search: failed to update index for book (%v): %v", book.Title, err)
-		}
-		return nil
+	if err = bookshelf.DB.UpdateBook(book); err != nil {
+		return err
 	}
 
-	return err
+	if err = bookshelf.IndexBook(ctxt, book); err != nil {
+		log.Printf("search: failed to update index for book [%v]: %v", book.ID, err)
+	}
+
+	return nil
 }
 
 // syncs the books cache regularly with the datastore
